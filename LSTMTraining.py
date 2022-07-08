@@ -1,12 +1,12 @@
 from turtle import forward
+from unicodedata import bidirectional
 import torch
 import torch.nn as nn
-import scipy
 import numpy
 import DataLoader
 from sklearn.model_selection import train_test_split
 from torch.nn.utils import weight_norm
-from TCN import TemporalConvNet
+from TCN import TCN
 
 num_epochs = 100
 
@@ -20,35 +20,41 @@ def set_device(model, Tensor, device):
     return model, Tensor
 
 class Net1037(nn.Module):
-    def __init__(self, channels, sample_frequency=512, time_basis=1):
-        super(Net1037, self).__init__()
-        channel_shape = numpy.ones(sample_frequency*time_basis)*channels
-        self.tcn = TemporalConvNet(num_inputs=sample_frequency*time_basis, num_channels=channel_shape)
-        self.lstm1 = nn.LSTM()
-        self.lstm2 = nn.LSTM()
-        self.lstm3 = nn.LSTM()
-        self.fc1 = nn.Linear()
-        self.fc2 = nn.Linear()
-    def forward(self, x, type):
-        # EEG Input, 512Hz 
-        x = self.tcn(x)
-        x = self.lstm1(x)
-        x = self.lstm2(x)
-        x = self.lstm3(x)
 
+    # Default Parameters
+    nhid = 25
+    levels = 8
+    hidden_size = 64
+    mfcc_length = 20
+    TLength=4
+    HLength=2
+
+    def __init__(self, channels=125, sample_frequency=512, time_basis=1):
+        super(Net1037, self).__init__()
+        # self.tcn = TCN(input_size=channels, output_size=self.hidden_size, num_channels=[self.nhid] * self.levels)
+        self.lstm = nn.LSTM(input_size = channels, hidden_size = self.hidden_size, num_layers = 3, batch_first=True)
+        self.fc1 = nn.Linear(in_features = self.hidden_size,  out_features = self.mfcc_length)
+        self.fc2 = nn.Linear(in_features = self.hidden_size, out_features=self.TLength)
+        self.sigmoid1 = nn.Sigmoid()
+        self.sigmoid2 = nn.Sigmoid()
+        self.sigmoid0 = nn.Sigmoid()
+        self.fc3 = nn.Linear(in_features = self.hidden_size, out_features=self.HLength)
+    def forward(self, x, type, hidden=None):
+        # EEG Input, 512Hz 
+        # x = self.tcn(x)
+        x, hidden = self.lstm(x.transpose(0,1), hidden)
         # mfcc
         mfcc = self.fc1(x)
-        mfcc = nn.Sigmoid(mfcc)
-
+        mfcc = self.sigmoid0(mfcc) * 1000.0
         # label
         if type == "NMED-T":
             labelT = self.fc2(x)
-            labelT = nn.Sigmoid(labelT) * 10.0
-            return mfcc, labelT
+            labelT = self.sigmoid1(labelT) * 10.0
+            return mfcc.contiguous(), labelT
         elif type == "NMED-H":
             labelH = self.fc3(x)
-            labelH = nn.Sigmoid(labelH) * 10.0
-            return mfcc, labelH
+            labelH = self.sigmoid2(labelH) * 10.0
+            return mfcc.contiguous(), labelH
         else: 
             Exception("Not Implemented!")
 
@@ -64,87 +70,93 @@ class Runner(object):
 
     # Running model for train, test and validation. mode: 'train' for training, 'eval' for validation and test
     def run(self, DataLoaderT, DataLoaderH, mode='train'):
-        self.model.train() if mode is 'train' else self.model.eval()
+        self.model.train() if mode == 'train' else self.model.eval()
         # epoch_loss = torch.zeros(15).cuda()
-        all_prediction_T_tag, all_prediction_T_mfcc, all_prediction_H_tag, all_prediction_H_mfcc = []
-        all_label_T_tag, all_label_T_mfcc, all_label_H_tag, all_label_H_mfcc = []
+        all_prediction_T_tag, all_prediction_T_mfcc, all_prediction_H_tag, all_prediction_H_mfcc = [], [], [], []
+        all_label_T_tag, all_label_T_mfcc, all_label_H_tag, all_label_H_mfcc = [], [], [], []
         self.model = self.model.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
         Tensor = torch.FloatTensor
 
+        hidden_train = None
         epoch_tag_loss, epoch_mfcc_loss = 0.0, 0.0
         # Enumerate Data from NMED-T
-        for batch, (x, y) in enumerate(DataLoaderT):
-            EEG = x.type(Tensor)
+        for batch, (EEG, (FFT, label)) in enumerate(DataLoaderT):
+            EEG = torch.Tensor(EEG)
             # Label (Enjoyment, Similarity)
-            FFT, label = y
-            FFT = FFT.type(Tensor)
-            label = label.type(Tensor)
-            
-            EEG, label = EEG.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu")), label.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            FFT = torch.Tensor(FFT)
+            label = torch.Tensor(label)
+            FFT = FFT.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            EEG = EEG.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            label = label.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
             
             # Inference
             mfcc, tag = self.model(EEG, "NMED-T")
+            tag = torch.mean(tag, axis = 0)
 
             # Tag Loss
             TagLoss = self.criterion(label, tag)
 
             # mfcc Loss
-            MFCCLoss = self.criterion(mfcc, FFT)
-            
+            # MFCCLoss = self.criterion(mfcc, FFT)
+            print(mfcc)
+            print(FFT)
+
             all_prediction_T_tag.extend(tag.cpu().detach().numpy())
             all_label_T_tag.extend(label.cpu().detach().numpy())
             all_prediction_T_mfcc.extend(mfcc.cpu().detach().numpy())
             all_label_T_mfcc.extend(FFT.cpu().detach().numpy())
 
-            if mode is 'train':
+            if mode == 'train':
                 self.optimizer.zero_grad()
                 TagLoss.backward()
-                MFCCLoss.backward()
+                # MFCCLoss.backward()
                 self.optimizer.step()
             
             epoch_tag_loss += TagLoss.item()
-            epoch_mfcc_loss += MFCCLoss.item()
+            # epoch_mfcc_loss += MFCCLoss.item()
             # print(global_grad_saver)
         
-        avg_loss_T_tag = epoch_tag_loss/len(DataLoaderT.dataset)
-        avg_loss_T_MFCC = epoch_mfcc_loss / len(DataLoaderT.dataset)
+        avg_loss_T_tag = epoch_tag_loss/len(DataLoaderT)
+        # avg_loss_T_MFCC = epoch_mfcc_loss / len(DataLoaderT.dataset)
         
         epoch_tag_loss, epoch_mfcc_loss = 0.0, 0.0
         # Enumerate Data from NMED-H
-        for batch, (x, y) in enumerate(DataLoaderH):
-            EEG = x.type(Tensor)
+        for batch, (EEG, (FFT, label)) in enumerate(DataLoaderH):
+            EEG = torch.Tensor(EEG)
             # Label (Enjoyment, Similarity)
-            FFT, label = y
-            FFT = FFT.type(Tensor)
-            label = label.type(Tensor)
-
-            EEG, label = EEG.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu")), label.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            FFT = torch.Tensor(FFT)
+            label = torch.Tensor(label)
+            FFT = FFT.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            EEG = EEG.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+            label = label.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
             
             # Inference
-            mfcc, tag = self.model(EEG, "NMED-T")
+            mfcc, tag = self.model(EEG, "NMED-H")
+            tag = torch.mean(tag, axis = 0)
 
             # Tag Loss
             TagLoss = self.criterion(label, tag)
+
             # mfcc Loss
-            MFCCLoss = self.criterion(mfcc, FFT)
-            
+            # MFCCLoss = self.criterion(mfcc, FFT)
+
             all_prediction_H_tag.extend(tag.cpu().detach().numpy())
             all_label_H_tag.extend(label.cpu().detach().numpy())
             all_prediction_H_mfcc.extend(mfcc.cpu().detach().numpy())
             all_label_H_mfcc.extend(FFT.cpu().detach().numpy())
 
-            if mode is 'train':
+            if mode == 'train':
                 self.optimizer.zero_grad()
                 TagLoss.backward()
-                MFCCLoss.backward()
+                # MFCCLoss.backward()
                 self.optimizer.step()
             
             epoch_tag_loss += TagLoss.item()
-            epoch_mfcc_loss += MFCCLoss.item()
+            # epoch_mfcc_loss += MFCCLoss.item()
             # print(global_grad_saver)
         
-        avg_loss_H_tag = epoch_tag_loss/len(DataLoaderT.dataset)
-        avg_loss_H_MFCC = epoch_mfcc_loss / len(DataLoaderT.dataset)
+        avg_loss_H_tag = epoch_tag_loss/len(DataLoaderH)
+        # avg_loss_H_MFCC = epoch_mfcc_loss / len(DataLoaderH)
 
         return (all_prediction_T_tag, all_prediction_T_mfcc, all_prediction_H_tag, all_prediction_H_mfcc), (all_label_T_tag, all_label_T_mfcc, all_label_H_tag, all_label_H_mfcc), (avg_loss_T_tag, avg_loss_T_MFCC, avg_loss_H_tag, avg_loss_H_MFCC)
 
@@ -155,22 +167,22 @@ class Runner(object):
         stop = self.learning_rate < self.stopping_rate
         return stop
 
-
-
-
 if __name__ == "__main__":
     x_Hindi, y_Hindi = DataLoader.loadHindi("./NMED-H")
     x_Tempo, y_Tempo = DataLoader.loadTempo("./NMED-T")
-
-    x_train_Hindi, x_valid_Hindi, y_train_Hindi, y_valid_Hindi = train_test_split(x_Hindi, y_Hindi, train_size=0.9)
-    x_train_Tempo, x_valid_Tempo, y_train_Tempo, y_valid_Tempo = train_test_split(x_Tempo, y_Tempo, train_size=0.9)
+    x_train_Hindi, x_valid_Hindi = x_Hindi, x_Hindi
+    x_train_Tempo, x_valid_Tempo = x_Tempo, x_Tempo
+    y_train_Hindi, y_valid_Hindi = y_Hindi, y_Hindi
+    y_train_Tempo, y_valid_Tempo = y_Tempo, y_Tempo
+    # x_train_Hindi, x_valid_Hindi, y_train_Hindi, y_valid_Hindi = train_test_split(x_Hindi, y_Hindi, train_size=0.9)
+    # x_train_Tempo, x_valid_Tempo, y_train_Tempo, y_valid_Tempo = train_test_split(x_Tempo, y_Tempo, train_size=0.9)
     train_set_Hindi = DataLoader.NMEDDataSet(x_train_Hindi, y_train_Hindi)
     vaild_set_Hindi = DataLoader.NMEDDataSet(x_valid_Hindi, y_valid_Hindi)
     train_set_Tempo = DataLoader.NMEDDataSet(x_train_Tempo, y_train_Tempo)
     vaild_set_Tempo = DataLoader.NMEDDataSet(x_valid_Tempo, y_valid_Tempo)
     runner = Runner()
 
-    from sklearn.metrics import r2_score, accuracy_score
+    from sklearn.metrics import r2_score
     for epoch in range(num_epochs):
         train_y_pred, train_y_truth, train_loss = runner.run(train_set_Hindi, train_set_Tempo, 'train')
         valid_y_pred, valid_y_truth, valid_loss = runner.run(vaild_set_Hindi, vaild_set_Tempo,  'eval')
