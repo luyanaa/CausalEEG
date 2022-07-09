@@ -5,3 +5,4 @@ behaveStruct_b.mat
 behavioralRatings.mat
 trigger/
 __pycache__/
+*.pth

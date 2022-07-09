@@ -42,19 +42,20 @@ class Net1037(nn.Module):
     def forward(self, x, type, hidden=None):
         # EEG Input, 512Hz 
         # x = self.tcn(x)
-        x, hidden = self.lstm(x.transpose(0,1), hidden)
+        x, (hidden,cell) = self.lstm(x.transpose(0,1), hidden)
         # mfcc
         mfcc = self.fc1(x)
         mfcc = self.sigmoid0(mfcc) * 1000.0
+        mfcc = mfcc.transpose(0, 1)
         # label
         if type == "NMED-T":
             labelT = self.fc2(x)
             labelT = self.sigmoid1(labelT) * 10.0
-            return mfcc.contiguous(), labelT
+            return mfcc, labelT
         elif type == "NMED-H":
             labelH = self.fc3(x)
             labelH = self.sigmoid2(labelH) * 10.0
-            return mfcc.contiguous(), labelH
+            return mfcc, labelH
         else: 
             Exception("Not Implemented!")
 
@@ -83,6 +84,7 @@ class Runner(object):
         for batch, (EEG, (FFT, label)) in enumerate(DataLoaderT):
             EEG = torch.Tensor(EEG)
             # Label (Enjoyment, Similarity)
+            FFT_1 = FFT
             FFT = torch.Tensor(FFT)
             label = torch.Tensor(label)
             FFT = FFT.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
@@ -92,13 +94,16 @@ class Runner(object):
             # Inference
             mfcc, tag = self.model(EEG, "NMED-T")
             tag = torch.mean(tag, axis = 0)
-
+            FFT = torch.nn.functional.interpolate(FFT.unsqueeze(0), size=mfcc.shape[1]).squeeze(0)
+            # mfcc1.resize(20, FFT_1.shape[1])
+            # mfcc = mfcc.squeeze(1)
             # Tag Loss
             TagLoss = self.criterion(label, tag)
 
             # mfcc Loss
-            # MFCCLoss = self.criterion(mfcc, FFT)
-
+            MFCCLoss = self.criterion(mfcc, FFT)
+            
+            loss = TagLoss+ MFCCLoss
             all_prediction_T_tag.extend(tag.cpu().detach().numpy())
             all_label_T_tag.extend(label.cpu().detach().numpy())
             all_prediction_T_mfcc.extend(mfcc.cpu().detach().numpy())
@@ -106,22 +111,19 @@ class Runner(object):
 
             if mode == 'train':
                 self.optimizer.zero_grad()
-                TagLoss.backward()
-                # MFCCLoss.backward()
+                loss.backward()
                 self.optimizer.step()
             
             epoch_tag_loss += TagLoss.item()
-            # epoch_mfcc_loss += MFCCLoss.item()
-            # print(global_grad_saver)
+            epoch_mfcc_loss += MFCCLoss.item()
         
         avg_loss_T_tag = epoch_tag_loss/len(DataLoaderT)
-        # avg_loss_T_MFCC = epoch_mfcc_loss / len(DataLoaderT.dataset)
+        avg_loss_T_MFCC = epoch_mfcc_loss / len(DataLoaderT)
         
         epoch_tag_loss, epoch_mfcc_loss = 0.0, 0.0
         # Enumerate Data from NMED-H
         for batch, (EEG, (FFT, label)) in enumerate(DataLoaderH):
             EEG = torch.Tensor(EEG)
-            # Label (Enjoyment, Similarity)
             FFT = torch.Tensor(FFT)
             label = torch.Tensor(label)
             FFT = FFT.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
@@ -131,39 +133,38 @@ class Runner(object):
             # Inference
             mfcc, tag = self.model(EEG, "NMED-H")
             tag = torch.mean(tag, axis = 0)
-
+            FFT = torch.nn.functional.interpolate(FFT.unsqueeze(0), size=mfcc.shape[1]).squeeze(0)
             # Tag Loss
             TagLoss = self.criterion(label, tag)
 
             # mfcc Loss
-            # MFCCLoss = self.criterion(mfcc, FFT)
+            MFCCLoss = self.criterion(mfcc, FFT)
 
             all_prediction_H_tag.extend(tag.cpu().detach().numpy())
             all_label_H_tag.extend(label.cpu().detach().numpy())
             all_prediction_H_mfcc.extend(mfcc.cpu().detach().numpy())
             all_label_H_mfcc.extend(FFT.cpu().detach().numpy())
 
+            loss = TagLoss + MFCCLoss
             if mode == 'train':
                 self.optimizer.zero_grad()
-                TagLoss.backward()
-                # MFCCLoss.backward()
+                loss.backward()
                 self.optimizer.step()
             
             epoch_tag_loss += TagLoss.item()
-            # epoch_mfcc_loss += MFCCLoss.item()
-            # print(global_grad_saver)
+            epoch_mfcc_loss += MFCCLoss.item()
         
         avg_loss_H_tag = epoch_tag_loss/len(DataLoaderH)
-        # avg_loss_H_MFCC = epoch_mfcc_loss / len(DataLoaderH)
+        avg_loss_H_MFCC = epoch_mfcc_loss / len(DataLoaderH)
 
         return (all_prediction_T_tag, all_prediction_T_mfcc, all_prediction_H_tag, all_prediction_H_mfcc), (all_label_T_tag, all_label_T_mfcc, all_label_H_tag, all_label_H_mfcc), (avg_loss_T_tag, avg_loss_T_MFCC, avg_loss_H_tag, avg_loss_H_MFCC)
 
     # Early stopping function for given validation loss
-    def early_stop(self, loss, epoch):
-        self.scheduler.step(loss, epoch)
-        self.learning_rate = self.optimizer.param_groups[0]['lr']
-        stop = self.learning_rate < self.stopping_rate
-        return stop
+    # def early_stop(self, loss, epoch):
+    #     self.scheduler.step(loss, epoch)
+    #     self.learning_rate = self.optimizer.param_groups[0]['lr']
+    #     stop = self.learning_rate < self.stopping_rate
+    #     return stop
 
 if __name__ == "__main__":
     x_Hindi, y_Hindi = DataLoader.loadHindi("./NMED-H")
@@ -188,21 +189,21 @@ if __name__ == "__main__":
         (pred_T_tag, pred_T_mfcc, pred_H_tag, pred_H_mfcc) = train_y_pred 
         (label_T_tag, label_T_mfcc, label_H_tag, label_H_mfcc) = train_y_truth 
         (avg_loss_T_tag, avg_loss_T_MFCC, avg_loss_H_tag, avg_loss_H_MFCC) = train_loss
-        trainLabelError = r2_score(numpy.concatenate(pred_T_tag,pred_H_tag), numpy.concatenate(label_T_tag, label_H_tag))
-        trainMFCCError = r2_score(numpy.concatenate(pred_T_mfcc,pred_H_mfcc), numpy.concatenate(label_T_mfcc, label_H_mfcc))
-        print(trainLabelError, trainMFCCError, train_loss)
+        # trainLabelError = r2_score(numpy.concatenate(pred_T_tag,pred_H_tag), numpy.concatenate(label_T_tag, label_H_tag))
+        # trainMFCCError = r2_score(numpy.concatenate(pred_T_mfcc,pred_H_mfcc), numpy.concatenate(label_T_mfcc, label_H_mfcc))
+        print(train_loss)
 
         (pred_T_tag, pred_T_mfcc, pred_H_tag, pred_H_mfcc) = valid_y_pred 
         (label_T_tag, label_T_mfcc, label_H_tag, label_H_mfcc) = valid_y_truth 
         (avg_loss_T_tag, avg_loss_T_MFCC, avg_loss_H_tag, avg_loss_H_MFCC) = valid_loss
-        validLabelError = r2_score(numpy.concatenate(pred_T_tag,pred_H_tag), numpy.concatenate(label_T_tag, label_H_tag))
-        validMFCCError = r2_score(numpy.concatenate(pred_T_mfcc,pred_H_mfcc), numpy.concatenate(label_T_mfcc, label_H_mfcc))
-        print(validLabelError, validMFCCError, valid_loss)
+        # validLabelError = r2_score(numpy.concatenate(pred_T_tag,pred_H_tag), numpy.concatenate(label_T_tag, label_H_tag))
+        # validMFCCError = r2_score(numpy.concatenate(pred_T_mfcc,pred_H_mfcc), numpy.concatenate(label_T_mfcc, label_H_mfcc))
+        print(valid_loss)
 
         if epoch % 10 == 0:
             torch.save(runner.model, "model"+str(epoch)+".pth")
-        if runner.early_stop(valid_loss, epoch + 1):
-            torch.save(runner.model, "model"+str(epoch)+".pth")
-            break
+        # if runner.early_stop(valid_loss, epoch + 1):
+        #     torch.save(runner.model, "model"+str(epoch)+".pth")
+        #     break
     
     print("Training Finished")

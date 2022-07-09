@@ -76,7 +76,7 @@ def loadHindi(path):
             trial.append(torch.Tensor(sub[i]))
             audio.append(librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]))
             label.append(behave[type][int(trigger.strip("data")) % 10 - 1][0][i])
-            print(sub[i].shape[1]/librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]).shape[1] )
+            # print(sub[i].shape[1]/librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]).shape[1] )
     return (trial, (audio, label))
 
 tempoFile = ["Bonobo - First Fires.wav", "LA Priest - Oino.wav", "Daedelus - Tiptoes.wav", "Croquet Club - Careless Love.wav", \
@@ -114,6 +114,6 @@ def loadTempo(path):
             trial.append(torch.Tensor(sub[i]))
             audio.append(librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]))
             label.append(behave[int(trigger.strip("data")) - 21][i])
-            print(sub[i].shape[1]/librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]).shape[1])
+            # print(sub[i].shape[1]/librosa.feature.mfcc(stimulus[int(trigger.strip("data")) % 10 - 1]).shape[1])
 
     return (trial, (audio, label))
