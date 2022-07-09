@@ -98,8 +98,6 @@ class Runner(object):
 
             # mfcc Loss
             # MFCCLoss = self.criterion(mfcc, FFT)
-            print(mfcc)
-            print(FFT)
 
             all_prediction_T_tag.extend(tag.cpu().detach().numpy())
             all_label_T_tag.extend(label.cpu().detach().numpy())
